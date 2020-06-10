@@ -1634,10 +1634,11 @@ namespace smt {
     }
 
     void theory_str::instantiate_axiom_Substr(enode * e) {
+        th_rewriter & rw = ctx.get_rewriter();
         ast_manager & m = get_manager();
-        expr* substrBase = nullptr;
-        expr* substrPos = nullptr;
-        expr* substrLen = nullptr;
+        expr* w = nullptr;
+        expr* i = nullptr;
+        expr* n = nullptr;
 
         app * expr = e->get_owner();
         if (axiomatized_terms.contains(expr)) {
@@ -1648,79 +1649,61 @@ namespace smt {
 
         TRACE("str", tout << "instantiate Substr axiom for " << mk_pp(expr, m) << std::endl;);
 
-        VERIFY(u.str.is_extract(expr, substrBase, substrPos, substrLen));
+        VERIFY(u.str.is_extract(expr, w, i, n));  // str.substr(w,i,n)
 
-        expr_ref zero(m_autil.mk_numeral(rational::zero(), true), m);
-        expr_ref minusOne(m_autil.mk_numeral(rational::minus_one(), true), m);
-        SASSERT(zero);
-        SASSERT(minusOne);
+        expr_ref_vector condition1_terms(m);
+        condition1_terms.push_back(m_autil.mk_lt(i,mk_int(0)));            // i < 0
+        condition1_terms.push_back(m_autil.mk_ge(i, mk_strlen(w)));        // i >= |w|
+        condition1_terms.push_back(m_autil.mk_lt(n, mk_int(0)));           // n < 0
+        expr_ref condition1(mk_or(condition1_terms), m); 
 
-        expr_ref_vector argumentsValid_terms(m);
-        // pos >= 0
-        argumentsValid_terms.push_back(m_autil.mk_ge(substrPos, zero));
-        // pos < strlen(base)
-        // --> pos + -1*strlen(base) < 0
-        argumentsValid_terms.push_back(mk_not(m, m_autil.mk_ge(
-                                                    m_autil.mk_add(substrPos, m_autil.mk_mul(minusOne, mk_strlen(substrBase))),
-                                                    zero)));
-
-        // len >= 0
-        argumentsValid_terms.push_back(m_autil.mk_ge(substrLen, zero));
+        expr_ref condition2(m_autil.mk_gt(m_autil.mk_add(i,n),mk_strlen(w)),m);   // i+n > |w|
 
 
-        // (pos+len) >= strlen(base)
-        // --> pos + len + -1*strlen(base) >= 0
-        expr_ref lenOutOfBounds(m_autil.mk_ge(
-                                    m_autil.mk_add(substrPos, substrLen, m_autil.mk_mul(minusOne, mk_strlen(substrBase))),
-                                    zero), m);
-        expr_ref argumentsValid = mk_and(argumentsValid_terms);
+        expr_ref x1(mk_str_var("x1"), m);
+        expr_ref x2(mk_str_var("x2"), m);
+        expr_ref x3(mk_str_var("x3"), m);
 
-        // Case 1: pos < 0 or pos >= strlen(base) or len < 0
-        // ==> (Substr ...) = ""
-        expr_ref case1_premise(m.mk_not(argumentsValid), m);
         expr_ref case1_conclusion(ctx.mk_eq_atom(expr, mk_string("")), m);
-        expr_ref case1(m.mk_implies(case1_premise, case1_conclusion), m);
 
-        // Case 2: (pos >= 0 and pos < strlen(base) and len >= 0) and (pos+len) >= strlen(base)
-        // ==> base = t0.t1 AND len(t0) = pos AND (Substr ...) = t1
-        expr_ref t0(mk_str_var("t0"), m);
-        expr_ref t1(mk_str_var("t1"), m);
-        expr_ref case2_conclusion(m.mk_and(
-                                      ctx.mk_eq_atom(substrBase, mk_concat(t0,t1)),
-                                      ctx.mk_eq_atom(mk_strlen(t0), substrPos),
-                                      ctx.mk_eq_atom(expr, t1)), m);
-        expr_ref case2(m.mk_implies(m.mk_and(argumentsValid, lenOutOfBounds), case2_conclusion), m);
+        expr_ref_vector case2_conclusion_terms(m);
+        case2_conclusion_terms.push_back(ctx.mk_eq_atom(w,mk_concat(x1, x2)));
+        case2_conclusion_terms.push_back(ctx.mk_eq_atom(mk_strlen(x1),i));
+        case2_conclusion_terms.push_back(ctx.mk_eq_atom(mk_strlen(x2),m_autil.mk_sub(mk_strlen(w),i)));
+        case2_conclusion_terms.push_back(ctx.mk_eq_atom(expr, x2));
+        expr_ref case2_conclusion(mk_and(case2_conclusion_terms), m);
 
-        // Case 3: (pos >= 0 and pos < strlen(base) and len >= 0) and (pos+len) < strlen(base)
-        // ==> base = t2.t3.t4 AND len(t2) = pos AND len(t3) = len AND (Substr ...) = t3
-
-        expr_ref t2(mk_str_var("t2"), m);
-        expr_ref t3(mk_str_var("t3"), m);
-        expr_ref t4(mk_str_var("t4"), m);
         expr_ref_vector case3_conclusion_terms(m);
-        case3_conclusion_terms.push_back(ctx.mk_eq_atom(substrBase, mk_concat(t2, mk_concat(t3, t4))));
-        case3_conclusion_terms.push_back(ctx.mk_eq_atom(mk_strlen(t2), substrPos));
-        case3_conclusion_terms.push_back(ctx.mk_eq_atom(mk_strlen(t3), substrLen));
-        case3_conclusion_terms.push_back(ctx.mk_eq_atom(expr, t3));
+        case3_conclusion_terms.push_back(ctx.mk_eq_atom(w,mk_concat(x1, mk_concat(x2, x3))));
+        case3_conclusion_terms.push_back(ctx.mk_eq_atom(mk_strlen(x1),i));
+        case3_conclusion_terms.push_back(ctx.mk_eq_atom(mk_strlen(x2),n));
+        case3_conclusion_terms.push_back(ctx.mk_eq_atom(mk_strlen(x3),m_autil.mk_sub(mk_strlen(w),m_autil.mk_add(i,n))));
+        case3_conclusion_terms.push_back(ctx.mk_eq_atom(expr, x2));
         expr_ref case3_conclusion(mk_and(case3_conclusion_terms), m);
-        expr_ref case3(m.mk_implies(m.mk_and(argumentsValid, m.mk_not(lenOutOfBounds)), case3_conclusion), m);
 
-        {
-            th_rewriter rw(m);
 
-            expr_ref case1_rw(case1, m);
-            rw(case1_rw);
-            assert_axiom(case1_rw);
+        // Condition 1: i not in [0,len(w)-1] OR n < 0
+        expr_ref _finalAxiom(m.mk_ite(condition1,
+                // Condition 1 true
+                // substr(w,i,n) = ""
+        case1_conclusion,
+               
+        // Condition 2: i+n > len(w) AND Condition 1 doesn't hold 
+        m.mk_ite(condition2,
+                        // Condition 2 true
+                        // substr(w,i,n) = w[i:]
+            case2_conclusion,
+                        // Condition 1 false AND  Condition 2 false
+                        // substr(w,i,n) = w[i:n]
+            case3_conclusion
+                        )
+                ), m);
 
-            expr_ref case2_rw(case2, m);
-            rw(case2_rw);
-            assert_axiom(case2_rw);
-
-            expr_ref case3_rw(case3, m);
-            rw(case3_rw);
-            assert_axiom(case3_rw);
-        }
+        expr_ref finalAxiom(_finalAxiom, m);
+        rw(finalAxiom);
+        assert_axiom(finalAxiom);
     }
+
 
     //  (str.replace s t t') is the string obtained by replacing the first occurrence
     //  of t in s, if any, by t'. Note that if t is empty, the result is to prepend
